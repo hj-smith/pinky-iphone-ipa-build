@@ -6,7 +6,8 @@ kit_sha=28a55b85e0adb54d532d5f63558535cf1d57d023f70c8cbe81717d3769bb4bee
 wda_commit=02cb92f0e93c8b021443bcbb8eeb80932c113220
 wda_tree=05f62a92a9136fcf7a0e00538d5acd47d4bdd43f375e14260fc2c718eeb2e3cf
 work=$(mktemp -d)
-dist="$(pwd)/dist"
+repo="$(pwd)"
+dist="$repo/dist"
 mkdir -p "$dist" "$work/wda" "$work/kit" "$work/Payload"
 export DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer
 xcodebuild -version | tee "$dist/xcode-version.txt"
@@ -34,6 +35,19 @@ PY
 tar -xzf "$work/kit.tar.gz" -C "$work/kit" --strip-components 1
 tar -xzf "$work/wda.tar.gz" -C "$work/wda" --strip-components 1
 
+upstream_commit=30efc9f0eaf60e85b65ced0e232dd058ccb13bb1
+git init -q "$work/pinky"
+git -C "$work/pinky" fetch -q --depth=1 https://github.com/DIYgod/pinky.git "$upstream_commit"
+git -C "$work/pinky" checkout -q --detach FETCH_HEAD
+test "$(git -C "$work/pinky" rev-parse HEAD)" = "$upstream_commit"
+git -C "$work/pinky" apply --check "$repo/terra-max.patch"
+git -C "$work/pinky" apply "$repo/terra-max.patch"
+(cd "$work/pinky" && go test ./internal/pilot -run 'TestTerraMaxThroughCompatibleGateway|TestChatFirstFallback')
+bash "$work/pinky/ios/build.sh" core
+cp "$work/pinky/ios/app/build/core/libpinkycore.a" "$work/kit/build/core/libpinkycore.a"
+cp "$work/pinky/ios/app/build/core/libpinkycore.h" "$work/kit/build/core/libpinkycore.h"
+cp "$work/pinky/ios/app/App/PinkyApp.swift" "$work/kit/App/PinkyApp.swift"
+
 xcodebuild build-for-testing -project "$work/wda/WebDriverAgent.xcodeproj" \
   -scheme WebDriverAgentRunner -configuration Debug -destination 'generic/platform=iOS' \
   -derivedDataPath "$work/wda-dd" ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
@@ -50,6 +64,8 @@ ditto "$test_bundle" "$app/PlugIns/WebDriverAgentRunner.xctest"
 plutil -replace PinkyWebDriverAgentHost -bool YES "$app/Info.plist" \
   || plutil -insert PinkyWebDriverAgentHost -bool YES "$app/Info.plist"
 plutil -insert UIBackgroundModes -string continuous -append "$app/Info.plist"
+id=$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")
+plutil -replace CFBundleIdentifier -string "$id.WebDriverAgentRunner" "$app/PlugIns/WebDriverAgentRunner.xctest/Info.plist"
 main=$(plutil -extract CFBundleExecutable raw "$app/Info.plist")
 testexec=$(plutil -extract CFBundleExecutable raw "$app/PlugIns/WebDriverAgentRunner.xctest/Info.plist")
 lipo -verify_arch arm64 "$app/$main"
@@ -60,6 +76,6 @@ import sys
 assert tuple(map(int, sys.argv[1].split("."))) <= (26, 0, 1), sys.argv[1]
 PY
 test ! -e "$app/embedded.mobileprovision"
-ipa="$dist/PinkyLite-$version-unsigned.ipa"
+ipa="$dist/PinkyLite-$version-terra-max-unsigned.ipa"
 ditto -c -k --keepParent "$work/Payload" "$ipa"
 (cd "$dist" && shasum -a 256 "$(basename "$ipa")" > SHA256SUMS)

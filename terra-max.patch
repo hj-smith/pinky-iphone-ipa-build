@@ -1,0 +1,97 @@
+diff --git a/internal/pilot/apis.go b/internal/pilot/apis.go
+index 6d7f05a..062edd0 100644
+--- a/internal/pilot/apis.go
++++ b/internal/pilot/apis.go
+@@ -30,7 +30,13 @@ import (
+ // (GPT-6 Astra and Luna, 6.1 Sol and 6.1 Terra), which OpenAI documents
+ // as calling tools only through it, or on Chat Completions only without
+ // reasoning.
++// terraMaxAlias opts in to the Responses API and max reasoning for Terra.
++const terraMaxAlias = "gpt-6.1-terra@max"
++
+ func usesResponses(cfg Config) bool {
++	if cfg.Provider == OpenAI && cfg.Model == terraMaxAlias {
++		return true
++	}
+ 	if cfg.Provider != OpenAI || (cfg.BaseURL != "" && cfg.BaseURL != DefaultOpenAIURL) {
+ 		return false
+ 	}
+diff --git a/internal/pilot/responses.go b/internal/pilot/responses.go
+index 18f73bf..bafc4df 100644
+--- a/internal/pilot/responses.go
++++ b/internal/pilot/responses.go
+@@ -272,14 +272,19 @@ func withoutID(raw json.RawMessage, typ string) json.RawMessage {
+ 
+ // post sends the conversation.
+ func (r *responses) post(ctx context.Context) (*rResponse, error) {
+-	body, err := marshal(map[string]any{
++	request := map[string]any{
+ 		"model":        r.model,
+ 		"instructions": r.system,
+ 		"input":        r.history,
+ 		"tools":        r.tools,
+ 		"tool_choice":  "auto",
+ 		"store":        false,
+-	})
++	}
++	if r.model == terraMaxAlias {
++		request["model"] = "gpt-6.1-terra"
++		request["reasoning"] = map[string]string{"effort": "max"}
++	}
++	body, err := marshal(request)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/pilot/terra_max_test.go b/internal/pilot/terra_max_test.go
+new file mode 100644
+index 0000000..77d6bc9
+--- /dev/null
++++ b/internal/pilot/terra_max_test.go
+@@ -0,0 +1,23 @@
++package pilot
++
++import (
++	"context"
++	"testing"
++)
++
++func TestTerraMaxThroughCompatibleGateway(t *testing.T) {
++	f := newFakeOpenAI(t, refuseTools, respondCall)
++	cfg := Config{Service: CustomOpenAI, Model: terraMaxAlias, BaseURL: f.srv.URL + "/v1"}
++	if result := Check(context.Background(), cfg, "test-only", f.srv.Client()); !result.OK {
++		t.Fatalf("check did not accept the response: %+v", result)
++	}
++	paths := f.paths()
++	if len(paths) != 1 || paths[0] != "/v1/responses" {
++		t.Fatalf("expected one Responses request, got %v", paths)
++	}
++	body := f.last().body
++	reasoning, ok := body["reasoning"].(map[string]any)
++	if body["model"] != "gpt-6.1-terra" || !ok || reasoning["effort"] != "max" {
++		t.Fatalf("unexpected response request: %v", body)
++	}
++}
+diff --git a/ios/app/App/PinkyApp.swift b/ios/app/App/PinkyApp.swift
+index 78c352e..3100c36 100644
+--- a/ios/app/App/PinkyApp.swift
++++ b/ios/app/App/PinkyApp.swift
+@@ -10,6 +10,19 @@ struct PinkyApp: App {
+         // The demo's screens stay clear of the system's prompt.
+         guard Demo.scenario == nil else { return }
+         #endif
++        // Optional one-time model setup for a locally personalized IPA.
++        // Keys remain in Keychain and the person can change these settings later.
++        if let initial = Bundle.main.object(forInfoDictionaryKey: "PinkyInitialModelSettings") as? [String: String],
++           let profile = initial["profile"], let service = initial["service"],
++           let model = initial["model"], let address = initial["address"] {
++            let defaults = UserDefaults.standard
++            if defaults.string(forKey: "pinkyAppliedModelProfile") != profile {
++                defaults.set(service, forKey: "service")
++                defaults.set(model, forKey: "model." + service)
++                defaults.set(address, forKey: "baseURL." + service)
++                defaults.set(profile, forKey: "pinkyAppliedModelProfile")
++            }
++        }
+         // Banners for approvals while Pinky works in other apps.
+         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+         Profile.remind()
